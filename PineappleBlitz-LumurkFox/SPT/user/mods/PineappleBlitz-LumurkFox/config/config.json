@@ -1,0 +1,11 @@
+{
+  "FuzeTimer": 1.5,
+  "Fragmentations": 250,
+  "ExplosionMinimum": 20,
+  "ExplosionMaximum": 25,
+  "HeavyBleedPercent": 0.57,
+  "LightBleedPercent": 0.87,
+  "Damage": 50,
+  "Penetration": 120,
+  "Price": 5000
+}
