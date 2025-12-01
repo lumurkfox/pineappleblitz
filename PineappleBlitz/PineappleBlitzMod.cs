@@ -85,10 +85,78 @@ public class PineappleBlitzMod(
             // Add to Prapor
             AddToTrader(config.Price);
 
+            // Blacklist from bots
+            if (config.BlacklistFromBots)
+            {
+                BlacklistFromBots(tables);
+            }
         }
         catch
         {
         }
+    }
+
+    private void BlacklistFromBots(dynamic tables)
+    {
+        try
+        {
+            dynamic bots = tables.Bots.Types;
+
+            foreach (dynamic botType in bots)
+            {
+                try
+                {
+                    var botTypeValue = botType.Value;
+                    var botTypeType = botTypeValue.GetType();
+                    var inventoryProperty = botTypeType.GetProperty("Inventory");
+                    if (inventoryProperty == null) continue;
+
+                    dynamic inventory = inventoryProperty.GetValue(botTypeValue);
+                    var inventoryType = inventory.GetType();
+                    var itemsProperty = inventoryType.GetProperty("Items") ?? inventoryType.GetProperty("items");
+                    if (itemsProperty == null) continue;
+
+                    dynamic inventoryItems = itemsProperty.GetValue(inventory);
+                    var inventoryItemsType = inventoryItems.GetType();
+
+                    // For grenades, blacklist from Equipment section
+                    var equipmentProperty = inventoryItemsType.GetProperty("Equipment");
+                    if (equipmentProperty != null)
+                    {
+                        dynamic equipment = equipmentProperty.GetValue(inventoryItems);
+                        if (equipment != null)
+                        {
+                            var equipmentType = equipment.GetType();
+                            var blacklistProperty = equipmentType.GetProperty("blacklist") ?? equipmentType.GetProperty("Blacklist");
+
+                            dynamic? blacklist = blacklistProperty?.GetValue(equipment);
+                            if (blacklist == null)
+                            {
+                                blacklist = new List<string>();
+                                blacklistProperty?.SetValue(equipment, blacklist);
+                            }
+
+                            bool alreadyBlacklisted = false;
+                            foreach (var blacklistedId in blacklist)
+                            {
+                                if (blacklistedId?.ToString() == ITEM_ID)
+                                {
+                                    alreadyBlacklisted = true;
+                                    break;
+                                }
+                            }
+
+                            if (!alreadyBlacklisted)
+                            {
+                                blacklist.Add(ITEM_ID);
+                            }
+                        }
+                    }
+                }
+                catch { continue; }
+            }
+        }
+        catch { }
     }
 
     private void AddToTrader(int price)

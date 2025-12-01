@@ -7,5 +7,6 @@
   "LightBleedPercent": 0.87,
   "Damage": 50,
   "Penetration": 120,
-  "Price": 5000
+  "Price": 5000,
+  "BlacklistFromBots": true
 }

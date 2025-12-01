@@ -11,4 +11,5 @@ public class ModConfig
     public int Damage { get; set; } = 50;
     public int Penetration { get; set; } = 120;
     public int Price { get; set; } = 5000;
+    public bool BlacklistFromBots { get; set; } = true;
 }
