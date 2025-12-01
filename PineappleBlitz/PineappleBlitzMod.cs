@@ -33,35 +33,34 @@ public class PineappleBlitzMod(
             var tables = databaseService.GetTables();
             dynamic items = tables.Templates.Items;
 
-            // Check if already exists
-            if (items.ContainsKey(ITEM_ID))
-                return;
-
-            // Create item using CustomItemService
-            var cloneDetails = new NewItemFromCloneDetails
+            // Create item if it doesn't exist
+            if (!items.ContainsKey(ITEM_ID))
             {
-                ItemTplToClone = CLONE_FROM_ID,
-                ParentId = GRENADE_PARENT,
-                NewId = ITEM_ID,
-                HandbookParentId = HANDBOOK_CATEGORY,
-                FleaPriceRoubles = config.Price,
-                HandbookPriceRoubles = config.Price,
-                Locales = new Dictionary<string, LocaleDetails>
+                var cloneDetails = new NewItemFromCloneDetails
                 {
+                    ItemTplToClone = CLONE_FROM_ID,
+                    ParentId = GRENADE_PARENT,
+                    NewId = ITEM_ID,
+                    HandbookParentId = HANDBOOK_CATEGORY,
+                    FleaPriceRoubles = config.Price,
+                    HandbookPriceRoubles = config.Price,
+                    Locales = new Dictionary<string, LocaleDetails>
                     {
-                        "en", new LocaleDetails
                         {
-                            Name = "Pineapple Blitz Grenade",
-                            ShortName = "PBG",
-                            Description = "A short fuse, big bang grenade! Perfect for taking out enemies before they can run away, just don't be too close!"
+                            "en", new LocaleDetails
+                            {
+                                Name = "Pineapple Blitz Grenade",
+                                ShortName = "PBG",
+                                Description = "A short fuse, big bang grenade! Perfect for taking out enemies before they can run away, just don't be too close!"
+                            }
                         }
                     }
-                }
-            };
+                };
 
-            customItemService.CreateItemFromClone(cloneDetails);
+                customItemService.CreateItemFromClone(cloneDetails);
+            }
 
-            // Get the created item and modify properties
+            // Always apply config properties (even if item already exists)
             dynamic customGrenade = items[ITEM_ID];
             var itemType = customGrenade.GetType();
             var propsProperty = itemType.GetProperty("Properties") ?? itemType.GetProperty("Props");
@@ -71,7 +70,9 @@ public class PineappleBlitzMod(
                 dynamic props = propsProperty.GetValue(customGrenade);
                 var propsType = props.GetType();
 
+                // Set both ExplDelay and explDelay (game uses lowercase)
                 SafeSetProperty(propsType, props, "ExplDelay", config.FuzeTimer);
+                SafeSetProperty(propsType, props, "explDelay", config.FuzeTimer);
                 SafeSetProperty(propsType, props, "FragmentsCount", config.Fragmentations);
                 SafeSetProperty(propsType, props, "MinExplosionDistance", config.ExplosionMinimum);
                 SafeSetProperty(propsType, props, "MaxExplosionDistance", config.ExplosionMaximum);
@@ -100,60 +101,87 @@ public class PineappleBlitzMod(
     {
         try
         {
-            dynamic bots = tables.Bots.Types;
-
-            foreach (dynamic botType in bots)
+            // Add to PMC config globalLootBlacklist
+            dynamic configs = tables.GetType().GetProperty("Configs")?.GetValue(tables);
+            if (configs != null)
             {
-                try
+                // Try PMC config
+                var pmcProperty = configs.GetType().GetProperty("Pmc") ?? configs.GetType().GetProperty("pmc");
+                if (pmcProperty != null)
                 {
-                    var botTypeValue = botType.Value;
-                    var botTypeType = botTypeValue.GetType();
-                    var inventoryProperty = botTypeType.GetProperty("Inventory");
-                    if (inventoryProperty == null) continue;
-
-                    dynamic inventory = inventoryProperty.GetValue(botTypeValue);
-                    var inventoryType = inventory.GetType();
-                    var itemsProperty = inventoryType.GetProperty("Items") ?? inventoryType.GetProperty("items");
-                    if (itemsProperty == null) continue;
-
-                    dynamic inventoryItems = itemsProperty.GetValue(inventory);
-                    var inventoryItemsType = inventoryItems.GetType();
-
-                    // For grenades, blacklist from Equipment section
-                    var equipmentProperty = inventoryItemsType.GetProperty("Equipment");
-                    if (equipmentProperty != null)
+                    dynamic pmcConfig = pmcProperty.GetValue(configs);
+                    if (pmcConfig != null)
                     {
-                        dynamic equipment = equipmentProperty.GetValue(inventoryItems);
-                        if (equipment != null)
+                        AddToBlacklist(pmcConfig, "GlobalLootBlacklist");
+                        AddToBlacklist(pmcConfig, "globalLootBlacklist");
+
+                        // Also add to vestLoot and backpackLoot blacklists
+                        var vestLootProp = pmcConfig.GetType().GetProperty("VestLoot") ?? pmcConfig.GetType().GetProperty("vestLoot");
+                        if (vestLootProp != null)
                         {
-                            var equipmentType = equipment.GetType();
-                            var blacklistProperty = equipmentType.GetProperty("blacklist") ?? equipmentType.GetProperty("Blacklist");
+                            dynamic vestLoot = vestLootProp.GetValue(pmcConfig);
+                            if (vestLoot != null) AddToBlacklist(vestLoot, "Blacklist", "blacklist");
+                        }
 
-                            dynamic? blacklist = blacklistProperty?.GetValue(equipment);
-                            if (blacklist == null)
-                            {
-                                blacklist = new List<string>();
-                                blacklistProperty?.SetValue(equipment, blacklist);
-                            }
+                        var backpackLootProp = pmcConfig.GetType().GetProperty("BackpackLoot") ?? pmcConfig.GetType().GetProperty("backpackLoot");
+                        if (backpackLootProp != null)
+                        {
+                            dynamic backpackLoot = backpackLootProp.GetValue(pmcConfig);
+                            if (backpackLoot != null) AddToBlacklist(backpackLoot, "Blacklist", "blacklist");
+                        }
 
-                            bool alreadyBlacklisted = false;
-                            foreach (var blacklistedId in blacklist)
-                            {
-                                if (blacklistedId?.ToString() == ITEM_ID)
-                                {
-                                    alreadyBlacklisted = true;
-                                    break;
-                                }
-                            }
-
-                            if (!alreadyBlacklisted)
-                            {
-                                blacklist.Add(ITEM_ID);
-                            }
+                        var pocketLootProp = pmcConfig.GetType().GetProperty("PocketLoot") ?? pmcConfig.GetType().GetProperty("pocketLoot");
+                        if (pocketLootProp != null)
+                        {
+                            dynamic pocketLoot = pocketLootProp.GetValue(pmcConfig);
+                            if (pocketLoot != null) AddToBlacklist(pocketLoot, "Blacklist", "blacklist");
                         }
                     }
                 }
-                catch { continue; }
+
+                // Try Item config
+                var itemProperty = configs.GetType().GetProperty("Item") ?? configs.GetType().GetProperty("item");
+                if (itemProperty != null)
+                {
+                    dynamic itemConfig = itemProperty.GetValue(configs);
+                    if (itemConfig != null)
+                    {
+                        AddToBlacklist(itemConfig, "Blacklist", "blacklist");
+                    }
+                }
+            }
+        }
+        catch { }
+    }
+
+    private void AddToBlacklist(dynamic obj, params string[] propertyNames)
+    {
+        try
+        {
+            foreach (var propName in propertyNames)
+            {
+                var prop = obj.GetType().GetProperty(propName);
+                if (prop == null) continue;
+
+                dynamic? blacklist = prop.GetValue(obj);
+                if (blacklist == null) continue;
+
+                // Check if already in list
+                bool found = false;
+                foreach (var item in blacklist)
+                {
+                    if (item?.ToString() == ITEM_ID)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
+                {
+                    blacklist.Add(ITEM_ID);
+                }
+                return;
             }
         }
         catch { }
@@ -244,6 +272,8 @@ public class PineappleBlitzMod(
             object convertedValue;
             if (targetType == typeof(int))
                 convertedValue = Convert.ToInt32(value);
+            else if (targetType == typeof(float))
+                convertedValue = Convert.ToSingle(value);
             else if (targetType == typeof(double))
                 convertedValue = Convert.ToDouble(value);
             else if (targetType == typeof(bool))
@@ -267,10 +297,23 @@ public class PineappleBlitzMod(
     {
         try
         {
-            if (File.Exists(configPath))
+            // Try multiple possible paths
+            string[] possiblePaths = new[]
             {
-                var config = JsonSerializer.Deserialize<ModConfig>(File.ReadAllText(configPath));
-                if (config != null) return config;
+                configPath,
+                System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "SPT", "user", "mods", "PineappleBlitz-LumurkFox", "config", "config.json"),
+                System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "user", "mods", "PineappleBlitz-LumurkFox", "config", "config.json"),
+                System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "", "config", "config.json")
+            };
+
+            foreach (var path in possiblePaths)
+            {
+                if (File.Exists(path))
+                {
+                    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    var config = JsonSerializer.Deserialize<ModConfig>(File.ReadAllText(path), options);
+                    if (config != null) return config;
+                }
             }
         }
         catch { }
