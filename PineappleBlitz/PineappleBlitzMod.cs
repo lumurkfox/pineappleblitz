@@ -91,6 +91,9 @@ public class PineappleBlitzMod(
             {
                 BlacklistFromBots(tables);
             }
+
+            // Add to Grenadier quest
+            AddToGrenadierQuest(tables);
         }
         catch
         {
@@ -182,6 +185,97 @@ public class PineappleBlitzMod(
                     blacklist.Add(ITEM_ID);
                 }
                 return;
+            }
+        }
+        catch { }
+    }
+
+    private void AddToGrenadierQuest(dynamic tables)
+    {
+        const string GRENADIER_QUEST_ID = "5c0d190cd09282029f5390d8";
+        const string KILL_CONDITION_ID = "5c0d1a47d09282029e2fffb7";
+
+        try
+        {
+            dynamic templates = tables.Templates;
+            if (templates == null) return;
+
+            var questsProperty = templates.GetType().GetProperty("Quests");
+            if (questsProperty == null) return;
+
+            dynamic quests = questsProperty.GetValue(templates);
+            if (quests == null) return;
+
+            // Check if Grenadier quest exists
+            if (!quests.ContainsKey(GRENADIER_QUEST_ID)) return;
+
+            dynamic grenadierQuest = quests[GRENADIER_QUEST_ID];
+            var conditionsProperty = grenadierQuest.GetType().GetProperty("Conditions") ??
+                                   grenadierQuest.GetType().GetProperty("conditions");
+            if (conditionsProperty == null) return;
+
+            dynamic conditions = conditionsProperty.GetValue(grenadierQuest);
+            if (conditions == null) return;
+
+            var finishProperty = conditions.GetType().GetProperty("AvailableForFinish") ??
+                               conditions.GetType().GetProperty("availableForFinish");
+            if (finishProperty == null) return;
+
+            dynamic finishConditions = finishProperty.GetValue(conditions);
+            if (finishConditions == null) return;
+
+            // Find the counter condition
+            foreach (var condition in finishConditions)
+            {
+                var counterProperty = condition.GetType().GetProperty("Counter") ??
+                                    condition.GetType().GetProperty("counter");
+                if (counterProperty == null) continue;
+
+                dynamic counter = counterProperty.GetValue(condition);
+                if (counter == null) continue;
+
+                var counterConditionsProperty = counter.GetType().GetProperty("Conditions") ??
+                                              counter.GetType().GetProperty("conditions");
+                if (counterConditionsProperty == null) continue;
+
+                dynamic counterConditions = counterConditionsProperty.GetValue(counter);
+                if (counterConditions == null) continue;
+
+                // Find the kill condition with weapon list
+                foreach (var killCondition in counterConditions)
+                {
+                    var idProperty = killCondition.GetType().GetProperty("Id") ??
+                                   killCondition.GetType().GetProperty("id");
+                    if (idProperty == null) continue;
+
+                    var conditionId = idProperty.GetValue(killCondition)?.ToString();
+                    if (conditionId != KILL_CONDITION_ID) continue;
+
+                    var weaponProperty = killCondition.GetType().GetProperty("Weapon") ??
+                                       killCondition.GetType().GetProperty("weapon");
+                    if (weaponProperty == null) continue;
+
+                    dynamic weaponList = weaponProperty.GetValue(killCondition);
+                    if (weaponList == null) continue;
+
+                    // Check if our grenade is already in the list
+                    bool alreadyAdded = false;
+                    foreach (var weaponId in weaponList)
+                    {
+                        if (weaponId?.ToString() == ITEM_ID)
+                        {
+                            alreadyAdded = true;
+                            break;
+                        }
+                    }
+
+                    // Add our grenade ID if not already present
+                    if (!alreadyAdded)
+                    {
+                        weaponList.Add(ITEM_ID);
+                    }
+                    return;
+                }
             }
         }
         catch { }

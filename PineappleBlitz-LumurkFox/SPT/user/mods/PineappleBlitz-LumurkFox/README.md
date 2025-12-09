@@ -9,6 +9,7 @@ A custom grenade mod for SPT 4.0.x that adds the Pineapple Blitz Grenade (PBG) -
 - **Large Blast Radius**: 20-25m explosion range
 - **Heavy Damage**: 50 damage per fragment with 120 penetration
 - **Available at Prapor**: Loyalty Level 1, 5000 RUB
+- **Grenadier Quest Compatible**: Kills with this grenade count towards the Grenadier quest
 
 ## Installation
 

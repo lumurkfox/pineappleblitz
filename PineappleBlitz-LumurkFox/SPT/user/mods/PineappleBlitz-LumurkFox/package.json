@@ -1,7 +1,7 @@
 {
     "name": "PineappleBlitz",
     "author": "LumurkFox",
-    "version": "2.0.2",
+    "version": "2.0.3",
     "license": "MPL-2.0",
     "main": "PineappleBlitz.dll",
     "sptVersion": "~4.0.0",
