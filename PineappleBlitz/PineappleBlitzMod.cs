@@ -1,416 +1,303 @@
-using SPTarkov.Server.Core.Services;
-using SPTarkov.Server.Core.Services.Mod;
-using SPTarkov.Server.Core.Models.Spt.Mod;
-using SPTarkov.Server.Core.Models.Eft.Common.Tables;
-using SPTarkov.Server.Core.Models.Common;
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
-using System.Text.Json;
+using SPTarkov.Server.Core.Helpers.Server;
+using SPTarkov.Server.Core.Models.Common;
+using SPTarkov.Server.Core.Models.Eft.Common.Tables;
+using SPTarkov.Server.Core.Models.Spt.Config;
+using SPTarkov.Server.Core.Models.Spt.Mod;
+using SPTarkov.Server.Core.Models.Spt.Tables;
+using SPTarkov.Server.Core.Services.Modding.Custom;
 
 namespace PineappleBlitz;
 
-[Injectable(TypePriority = OnLoadOrder.PostDBModLoader + 1)]
+// Runs just after trader registration but before the handbook/trader/ragfair callbacks,
+// so the new item, its handbook entry and its Prapor assort are all in place before those read the DB.
+[Injectable(InjectionType.Singleton, TypePriority = OnLoadOrder.TraderRegistration + 1)]
 public class PineappleBlitzMod(
-    DatabaseService databaseService,
-    CustomItemService customItemService) : IOnLoad
+    TemplateTable templateTable,
+    TradersTable tradersTable,
+    PmcConfig pmcConfig,
+    ItemConfig itemConfig,
+    CustomItemService customItemService,
+    ModHelper modHelper,
+    ISptLogger<PineappleBlitzMod> logger) : IOnLoad
 {
-    private const string ITEM_ID = "66a3f5c8d2b1e4a790f3c2d1";
-    private const string CLONE_FROM_ID = "5710c24ad2720bc3458b45a3"; // F-1 grenade
-    private const string GRENADE_PARENT = "543be6564bdc2df4348b4568"; // Throwable weapon parent
-    private const string HANDBOOK_CATEGORY = "5b5f7a2386f774093f2ed3c4"; // Grenades
-    private const string PRAPOR_ID = "54cb50c76803fa8b248b4571";
-    private const string ROUBLES_ID = "5449016a4bdc2d6f028b456f";
+    private static readonly MongoId ItemId = new("66a3f5c8d2b1e4a790f3c2d1");
+    private static readonly MongoId CloneFromId = new("5710c24ad2720bc3458b45a3"); // F-1 grenade
+    private static readonly MongoId GrenadeParent = new("543be6564bdc2df4348b4568"); // ThrowWeap
+    private static readonly MongoId PraporId = new("54cb50c76803fa8b248b4571");
+    private static readonly MongoId RoublesId = new("5449016a4bdc2d6f028b456f");
+    private const string HandbookCategory = "5b5f7a2386f774093f2ed3c4"; // Grenades
 
-    public async Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         try
         {
-            var configPath = System.IO.Path.Combine(
-                System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "",
-                "config", "config.json");
-            var config = LoadConfig(configPath);
+            var config = LoadConfig();
 
-            var tables = databaseService.GetTables();
-            dynamic items = tables.Templates.Items;
-
-            // Create item if it doesn't exist
-            if (!items.ContainsKey(ITEM_ID))
-            {
-                var cloneDetails = new NewItemFromCloneDetails
-                {
-                    ItemTplToClone = CLONE_FROM_ID,
-                    ParentId = GRENADE_PARENT,
-                    NewId = ITEM_ID,
-                    HandbookParentId = HANDBOOK_CATEGORY,
-                    FleaPriceRoubles = config.Price,
-                    HandbookPriceRoubles = config.Price,
-                    Locales = new Dictionary<string, LocaleDetails>
-                    {
-                        {
-                            "en", new LocaleDetails
-                            {
-                                Name = "Pineapple Blitz Grenade",
-                                ShortName = "PBG",
-                                Description = "A short fuse, big bang grenade! Perfect for taking out enemies before they can run away, just don't be too close!"
-                            }
-                        }
-                    }
-                };
-
-                customItemService.CreateItemFromClone(cloneDetails);
-            }
-
-            // Always apply config properties (even if item already exists)
-            dynamic customGrenade = items[ITEM_ID];
-            var itemType = customGrenade.GetType();
-            var propsProperty = itemType.GetProperty("Properties") ?? itemType.GetProperty("Props");
-
-            if (propsProperty != null)
-            {
-                dynamic props = propsProperty.GetValue(customGrenade);
-                var propsType = props.GetType();
-
-                // Set both ExplDelay and explDelay (game uses lowercase)
-                SafeSetProperty(propsType, props, "ExplDelay", config.FuzeTimer);
-                SafeSetProperty(propsType, props, "explDelay", config.FuzeTimer);
-                SafeSetProperty(propsType, props, "FragmentsCount", config.Fragmentations);
-                SafeSetProperty(propsType, props, "MinExplosionDistance", config.ExplosionMinimum);
-                SafeSetProperty(propsType, props, "MaxExplosionDistance", config.ExplosionMaximum);
-                SafeSetProperty(propsType, props, "HeavyBleedingDelta", config.HeavyBleedPercent);
-                SafeSetProperty(propsType, props, "LightBleedingDelta", config.LightBleedPercent);
-                SafeSetProperty(propsType, props, "Damage", config.Damage);
-                SafeSetProperty(propsType, props, "PenetrationPower", config.Penetration);
-                SafeSetProperty(propsType, props, "CanSellOnRagfair", true);
-            }
-
-            // Add to Prapor
+            CreateItem(config);
+            ApplyProperties(config);
             AddToTrader(config.Price);
 
-            // Blacklist from bots
             if (config.BlacklistFromBots)
             {
-                BlacklistFromBots(tables);
+                BlacklistFromBots();
             }
 
-            // Add to Grenadier quest
-            AddToGrenadierQuest(tables);
+            AddToGrenadeKillQuests();
         }
-        catch
+        catch (Exception ex)
         {
+            logger.Error($"[PineappleBlitz] Failed to load: {ex.Message}", ex);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private void CreateItem(ModConfig config)
+    {
+        if (templateTable.Items.ContainsKey(ItemId))
+        {
+            return;
+        }
+
+        var cloneDetails = new NewItemFromCloneDetails
+        {
+            ItemTplToClone = CloneFromId,
+            ParentId = GrenadeParent,
+            NewId = ItemId,
+            NewItemName = "pineapple_blitz_grenade",
+            HandbookParentId = HandbookCategory,
+            FleaPriceRoubles = config.Price,
+            HandbookPriceRoubles = config.Price,
+            AddToHandbook = true,
+            AddToFleaPriceDb = true,
+            Locales = new Dictionary<string, LocaleDetails>
+            {
+                {
+                    "en", new LocaleDetails
+                    {
+                        Name = "Pineapple Blitz Grenade",
+                        ShortName = "PBG",
+                        Description =
+                            "A short fuse, big bang grenade! Perfect for taking out enemies before they can run away, just don't be too close!"
+                    }
+                }
+            }
+        };
+
+        // 4.1 requires the calling assembly so the server can attribute the item to this mod.
+        var result = customItemService.CreateItemFromClone(cloneDetails, Assembly.GetExecutingAssembly());
+        if (!result.Success)
+        {
+            logger.Error($"[PineappleBlitz] Could not create item: {string.Join("; ", result.Errors ?? [])}");
         }
     }
 
-    private void BlacklistFromBots(dynamic tables)
+    private void ApplyProperties(ModConfig config)
     {
-        try
+        // Re-applied on every boot so config edits take effect even though the item already exists.
+        if (!templateTable.Items.TryGetValue(ItemId, out var grenade) || grenade.Properties is null)
         {
-            // Add to PMC config globalLootBlacklist
-            dynamic configs = tables.GetType().GetProperty("Configs")?.GetValue(tables);
-            if (configs != null)
-            {
-                // Try PMC config
-                var pmcProperty = configs.GetType().GetProperty("Pmc") ?? configs.GetType().GetProperty("pmc");
-                if (pmcProperty != null)
-                {
-                    dynamic pmcConfig = pmcProperty.GetValue(configs);
-                    if (pmcConfig != null)
-                    {
-                        AddToBlacklist(pmcConfig, "GlobalLootBlacklist");
-                        AddToBlacklist(pmcConfig, "globalLootBlacklist");
-
-                        // Also add to vestLoot and backpackLoot blacklists
-                        var vestLootProp = pmcConfig.GetType().GetProperty("VestLoot") ?? pmcConfig.GetType().GetProperty("vestLoot");
-                        if (vestLootProp != null)
-                        {
-                            dynamic vestLoot = vestLootProp.GetValue(pmcConfig);
-                            if (vestLoot != null) AddToBlacklist(vestLoot, "Blacklist", "blacklist");
-                        }
-
-                        var backpackLootProp = pmcConfig.GetType().GetProperty("BackpackLoot") ?? pmcConfig.GetType().GetProperty("backpackLoot");
-                        if (backpackLootProp != null)
-                        {
-                            dynamic backpackLoot = backpackLootProp.GetValue(pmcConfig);
-                            if (backpackLoot != null) AddToBlacklist(backpackLoot, "Blacklist", "blacklist");
-                        }
-
-                        var pocketLootProp = pmcConfig.GetType().GetProperty("PocketLoot") ?? pmcConfig.GetType().GetProperty("pocketLoot");
-                        if (pocketLootProp != null)
-                        {
-                            dynamic pocketLoot = pocketLootProp.GetValue(pmcConfig);
-                            if (pocketLoot != null) AddToBlacklist(pocketLoot, "Blacklist", "blacklist");
-                        }
-                    }
-                }
-
-                // Try Item config
-                var itemProperty = configs.GetType().GetProperty("Item") ?? configs.GetType().GetProperty("item");
-                if (itemProperty != null)
-                {
-                    dynamic itemConfig = itemProperty.GetValue(configs);
-                    if (itemConfig != null)
-                    {
-                        AddToBlacklist(itemConfig, "Blacklist", "blacklist");
-                    }
-                }
-            }
+            return;
         }
-        catch { }
-    }
 
-    private void AddToBlacklist(dynamic obj, params string[] propertyNames)
-    {
-        try
-        {
-            foreach (var propName in propertyNames)
-            {
-                var prop = obj.GetType().GetProperty(propName);
-                if (prop == null) continue;
-
-                dynamic? blacklist = prop.GetValue(obj);
-                if (blacklist == null) continue;
-
-                // Check if already in list
-                bool found = false;
-                foreach (var item in blacklist)
-                {
-                    if (item?.ToString() == ITEM_ID)
-                    {
-                        found = true;
-                        break;
-                    }
-                }
-
-                if (!found)
-                {
-                    blacklist.Add(ITEM_ID);
-                }
-                return;
-            }
-        }
-        catch { }
-    }
-
-    private void AddToGrenadierQuest(dynamic tables)
-    {
-        const string GRENADIER_QUEST_ID = "5c0d190cd09282029f5390d8";
-        const string KILL_CONDITION_ID = "5c0d1a47d09282029e2fffb7";
-
-        try
-        {
-            dynamic templates = tables.Templates;
-            if (templates == null) return;
-
-            var questsProperty = templates.GetType().GetProperty("Quests");
-            if (questsProperty == null) return;
-
-            dynamic quests = questsProperty.GetValue(templates);
-            if (quests == null) return;
-
-            // Check if Grenadier quest exists
-            if (!quests.ContainsKey(GRENADIER_QUEST_ID)) return;
-
-            dynamic grenadierQuest = quests[GRENADIER_QUEST_ID];
-            var conditionsProperty = grenadierQuest.GetType().GetProperty("Conditions") ??
-                                   grenadierQuest.GetType().GetProperty("conditions");
-            if (conditionsProperty == null) return;
-
-            dynamic conditions = conditionsProperty.GetValue(grenadierQuest);
-            if (conditions == null) return;
-
-            var finishProperty = conditions.GetType().GetProperty("AvailableForFinish") ??
-                               conditions.GetType().GetProperty("availableForFinish");
-            if (finishProperty == null) return;
-
-            dynamic finishConditions = finishProperty.GetValue(conditions);
-            if (finishConditions == null) return;
-
-            // Find the counter condition
-            foreach (var condition in finishConditions)
-            {
-                var counterProperty = condition.GetType().GetProperty("Counter") ??
-                                    condition.GetType().GetProperty("counter");
-                if (counterProperty == null) continue;
-
-                dynamic counter = counterProperty.GetValue(condition);
-                if (counter == null) continue;
-
-                var counterConditionsProperty = counter.GetType().GetProperty("Conditions") ??
-                                              counter.GetType().GetProperty("conditions");
-                if (counterConditionsProperty == null) continue;
-
-                dynamic counterConditions = counterConditionsProperty.GetValue(counter);
-                if (counterConditions == null) continue;
-
-                // Find the kill condition with weapon list
-                foreach (var killCondition in counterConditions)
-                {
-                    var idProperty = killCondition.GetType().GetProperty("Id") ??
-                                   killCondition.GetType().GetProperty("id");
-                    if (idProperty == null) continue;
-
-                    var conditionId = idProperty.GetValue(killCondition)?.ToString();
-                    if (conditionId != KILL_CONDITION_ID) continue;
-
-                    var weaponProperty = killCondition.GetType().GetProperty("Weapon") ??
-                                       killCondition.GetType().GetProperty("weapon");
-                    if (weaponProperty == null) continue;
-
-                    dynamic weaponList = weaponProperty.GetValue(killCondition);
-                    if (weaponList == null) continue;
-
-                    // Check if our grenade is already in the list
-                    bool alreadyAdded = false;
-                    foreach (var weaponId in weaponList)
-                    {
-                        if (weaponId?.ToString() == ITEM_ID)
-                        {
-                            alreadyAdded = true;
-                            break;
-                        }
-                    }
-
-                    // Add our grenade ID if not already present
-                    if (!alreadyAdded)
-                    {
-                        weaponList.Add(ITEM_ID);
-                    }
-                    return;
-                }
-            }
-        }
-        catch { }
+        var props = grenade.Properties;
+        props.ExplDelay = config.FuzeTimer;
+        props.explDelay = config.FuzeTimer; // the client reads the lowercase variant
+        props.FragmentsCount = config.Fragmentations;
+        props.MinExplosionDistance = config.ExplosionMinimum;
+        props.MaxExplosionDistance = config.ExplosionMaximum;
+        props.HeavyBleedingDelta = config.HeavyBleedPercent;
+        props.LightBleedingDelta = config.LightBleedPercent;
+        props.Damage = config.Damage;
+        props.PenetrationPower = config.Penetration;
+        props.CanSellOnRagfair = true;
     }
 
     private void AddToTrader(int price)
     {
-        try
+        var trader = tradersTable.GetTrader(PraporId);
+        if (trader?.Assort is null)
         {
-            var traderId = new MongoId(PRAPOR_ID);
-            var trader = databaseService.GetTrader(traderId);
-            if (trader?.Assort == null) return;
+            logger.Warning("[PineappleBlitz] Prapor assort unavailable, skipping trader offer");
+            return;
+        }
 
-            string uniqueItemId = GenerateShortId("PineappleBlitz_Prapor");
+        var assortItemId = new MongoId(GenerateShortId("PineappleBlitz_Prapor"));
+        if (trader.Assort.Items.Any(item => item.Id == assortItemId))
+        {
+            return;
+        }
 
-            // Check if already exists
-            if (trader.Assort.Items.Any(item => item.Id.ToString() == uniqueItemId))
-                return;
-
-            // Add item
-            trader.Assort.Items.Add(new Item
+        trader.Assort.Items.Add(new Item
+        {
+            Id = assortItemId,
+            Template = ItemId,
+            ParentId = "hideout",
+            SlotId = "hideout",
+            Upd = new Upd
             {
-                Id = new MongoId(uniqueItemId),
-                Template = new MongoId(ITEM_ID),
-                ParentId = "hideout",
-                SlotId = "hideout",
-                Upd = new Upd
-                {
-                    UnlimitedCount = true,
-                    StackObjectsCount = 999999
-                }
-            });
+                UnlimitedCount = true,
+                StackObjectsCount = 999999
+            }
+        });
 
-            // Add barter scheme
-            dynamic barterScheme = trader.Assort.BarterScheme;
-            foreach (var existingScheme in barterScheme)
+        // BarterScheme is now strongly typed: item -> list of alternative barters -> the parts of one barter.
+        trader.Assort.BarterScheme[assortItemId] =
+        [
+            [
+                new BarterScheme
+                {
+                    Template = RoublesId,
+                    Count = price
+                }
+            ]
+        ];
+
+        trader.Assort.LoyalLevelItems[assortItemId] = 1;
+    }
+
+    private void BlacklistFromBots()
+    {
+        if (!pmcConfig.GlobalLootBlacklist.Contains(ItemId))
+        {
+            pmcConfig.GlobalLootBlacklist.Add(ItemId);
+        }
+
+        pmcConfig.VestLoot?.Blacklist?.Add(ItemId);
+        pmcConfig.PocketLoot?.Blacklist?.Add(ItemId);
+        pmcConfig.BackpackLoot?.Blacklist?.Add(ItemId);
+
+        // LootableItemBlacklist keeps it out of generated loot without also pulling it from the flea,
+        // which the plain ItemConfig.Blacklist would do.
+        itemConfig.LootableItemBlacklist?.Add(ItemId);
+    }
+
+    /// <summary>
+    ///     Adds the grenade to every quest kill-condition that already whitelists a hand grenade.
+    ///     Covers Grenadier, The Art of Explosion and Fearless Beast today, and picks up any future
+    ///     or modded grenade quest automatically. Condition IDs are reused across quests in the BSG
+    ///     database, so matching on the weapon list rather than on IDs is the reliable approach.
+    /// </summary>
+    private void AddToGrenadeKillQuests()
+    {
+        var patchedQuests = new List<string>();
+
+        foreach (var (questId, quest) in templateTable.Quests)
+        {
+            var conditions = quest.Conditions;
+            if (conditions is null)
             {
-                try
-                {
-                    var schemeList = existingScheme.Value;
-                    if (schemeList != null && schemeList.Count > 0 && schemeList[0].Count > 0)
-                    {
-                        var templateReq = schemeList[0][0];
-                        var reqType = templateReq.GetType();
-
-                        var reqJson = JsonSerializer.Serialize(templateReq);
-                        dynamic barterReq = JsonSerializer.Deserialize(reqJson, reqType)!;
-
-                        var tplProp = reqType.GetProperty("Tpl") ?? reqType.GetProperty("Template");
-                        var countProp = reqType.GetProperty("Count");
-
-                        if (tplProp != null)
-                            tplProp.SetValue(barterReq, new MongoId(ROUBLES_ID));
-                        if (countProp != null)
-                            countProp.SetValue(barterReq, (double)price);
-
-                        var innerListType = typeof(List<>).MakeGenericType(reqType);
-                        dynamic innerList = Activator.CreateInstance(innerListType)!;
-                        innerList.Add(barterReq);
-
-                        var outerListType = typeof(List<>).MakeGenericType(innerListType);
-                        dynamic outerList = Activator.CreateInstance(outerListType)!;
-                        outerList.Add(innerList);
-
-                        barterScheme[uniqueItemId] = outerList;
-                        break;
-                    }
-                }
-                catch { continue; }
+                continue;
             }
 
-            trader.Assort.LoyalLevelItems.Add(uniqueItemId, 1);
+            var buckets = new[]
+            {
+                conditions.AvailableForFinish,
+                conditions.Started,
+                conditions.Success,
+                conditions.Fail
+            };
+
+            var patched = false;
+
+            foreach (var bucket in buckets)
+            {
+                if (bucket is null)
+                {
+                    continue;
+                }
+
+                foreach (var condition in bucket)
+                {
+                    var counterConditions = condition.Counter?.Conditions;
+                    if (counterConditions is null)
+                    {
+                        continue;
+                    }
+
+                    foreach (var counterCondition in counterConditions)
+                    {
+                        var weapons = counterCondition.Weapon;
+
+                        // An empty weapon list means "any weapon", so it already counts our grenade.
+                        if (weapons is null || weapons.Count == 0 || weapons.Contains(ItemId.ToString()))
+                        {
+                            continue;
+                        }
+
+                        if (!weapons.Any(IsThrowable))
+                        {
+                            continue;
+                        }
+
+                        weapons.Add(ItemId.ToString());
+                        patched = true;
+                    }
+                }
+            }
+
+            if (patched)
+            {
+                patchedQuests.Add(string.IsNullOrEmpty(quest.QuestName) ? questId.ToString() : quest.QuestName);
+            }
         }
-        catch
+
+        if (patchedQuests.Count > 0)
         {
+            logger.Success($"[PineappleBlitz] Grenade now counts for {patchedQuests.Count} quest(s): {string.Join(", ", patchedQuests)}");
+        }
+        else
+        {
+            logger.Warning("[PineappleBlitz] Found no grenade kill quests to patch");
         }
     }
 
-    private void SafeSetProperty(Type propsType, dynamic props, string propertyName, object value)
+    private bool IsThrowable(string tpl)
     {
-        try
-        {
-            var property = propsType.GetProperty(propertyName);
-            if (property == null) return;
-
-            var targetType = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
-
-            object convertedValue;
-            if (targetType == typeof(int))
-                convertedValue = Convert.ToInt32(value);
-            else if (targetType == typeof(float))
-                convertedValue = Convert.ToSingle(value);
-            else if (targetType == typeof(double))
-                convertedValue = Convert.ToDouble(value);
-            else if (targetType == typeof(bool))
-                convertedValue = Convert.ToBoolean(value);
-            else
-                convertedValue = value;
-
-            property.SetValue(props, convertedValue);
-        }
-        catch { }
+        return MongoId.IsValidMongoId(tpl)
+               && templateTable.Items.TryGetValue(new MongoId(tpl), out var item)
+               && item.Parent == GrenadeParent;
     }
 
     private static string GenerateShortId(string input)
     {
-        using var sha256 = System.Security.Cryptography.SHA256.Create();
-        var hash = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(input));
-        return BitConverter.ToString(hash).Replace("-", "").Substring(0, 24).ToLower();
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexStringLower(hash)[..24];
     }
 
-    private ModConfig LoadConfig(string configPath)
+    private ModConfig LoadConfig()
     {
         try
         {
-            // Try multiple possible paths
-            string[] possiblePaths = new[]
-            {
-                configPath,
-                System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "SPT", "user", "mods", "PineappleBlitz-LumurkFox", "config", "config.json"),
-                System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "user", "mods", "PineappleBlitz-LumurkFox", "config", "config.json"),
-                System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) ?? "", "config", "config.json")
-            };
+            var modFolder = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
+            var configPath = System.IO.Path.Combine(modFolder, "config", "config.json");
 
-            foreach (var path in possiblePaths)
+            if (File.Exists(configPath))
             {
-                if (File.Exists(path))
+                var config = JsonSerializer.Deserialize<ModConfig>(
+                    File.ReadAllText(configPath),
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                if (config is not null)
                 {
-                    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                    var config = JsonSerializer.Deserialize<ModConfig>(File.ReadAllText(path), options);
-                    if (config != null) return config;
+                    return config;
                 }
             }
+
+            logger.Warning("[PineappleBlitz] Could not read config, using defaults");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            logger.Warning($"[PineappleBlitz] Could not load config ({ex.Message}), using defaults");
+        }
+
         return new ModConfig();
     }
 }
