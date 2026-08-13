@@ -1,28 +1,41 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>PineappleBlitz</RootNamespace>
     <OutputType>Library</OutputType>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>2.0.0</Version>
+    <Version>2.1.0</Version>
+    <Configuration>Release</Configuration>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+  </PropertyGroup>
+
+  <!-- Path to the SPT server binaries. Override on the command line if your install lives elsewhere:
+       dotnet build -p:SptServerDir="D:\SPT\SPT_Runtime" -->
+  <PropertyGroup>
+    <SptServerDir Condition="'$(SptServerDir)' == ''">F:\SPT 4.1\SPT_Runtime</SptServerDir>
+    <ModDeployDir Condition="'$(ModDeployDir)' == ''">$(SptServerDir)\user\mods\PineappleBlitz-LumurkFox</ModDeployDir>
   </PropertyGroup>
 
   <ItemGroup>
     <Reference Include="SPTarkov.Common">
-      <HintPath>F:\SPT 4.0.6\SPT\SPTarkov.Common.dll</HintPath>
+      <HintPath>$(SptServerDir)\SPTarkov.Common.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="SPTarkov.DI">
-      <HintPath>F:\SPT 4.0.6\SPT\SPTarkov.DI.dll</HintPath>
+      <HintPath>$(SptServerDir)\SPTarkov.DI.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="SPTarkov.Server.Core">
-      <HintPath>F:\SPT 4.0.6\SPT\SPTarkov.Server.Core.dll</HintPath>
+      <HintPath>$(SptServerDir)\SPTarkov.Server.Core.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="SemanticVersioning">
-      <HintPath>F:\SPT 4.0.6\SPT\SemanticVersioning.dll</HintPath>
+      <HintPath>$(SptServerDir)\SemanticVersioning.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
@@ -34,12 +47,12 @@
     </Content>
   </ItemGroup>
 
-  <PropertyGroup>
-    <Configuration>Release</Configuration>
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
-    <GenerateDependencyFile>false</GenerateDependencyFile>
-    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
-    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
-  </PropertyGroup>
+  <!-- Copy the built mod straight into the server's mod folder. Skip with -p:DeployToServer=false -->
+  <Target Name="DeployToSptServer" AfterTargets="Build"
+          Condition="'$(DeployToServer)' != 'false' And Exists('$(SptServerDir)')">
+    <MakeDir Directories="$(ModDeployDir)\config" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModDeployDir)" />
+    <Copy SourceFiles="config\config.json" DestinationFolder="$(ModDeployDir)\config" SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="Deployed PineappleBlitz to $(ModDeployDir)" />
+  </Target>
 </Project>

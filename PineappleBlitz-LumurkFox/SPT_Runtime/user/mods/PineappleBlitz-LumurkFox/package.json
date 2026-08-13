@@ -1,13 +1,13 @@
 {
     "name": "PineappleBlitz",
     "author": "LumurkFox",
-    "version": "2.0.3",
+    "version": "2.1.0",
     "license": "MPL-2.0",
     "main": "PineappleBlitz.dll",
-    "sptVersion": "~4.0.0",
+    "sptVersion": "~4.1.0",
     "contributors": [
         "Echo55 (original concept)"
     ],
-    "url": "",
+    "url": "https://github.com/lumurkfox/pineappleblitz",
     "incompatibilities": []
 }
